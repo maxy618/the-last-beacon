@@ -41,10 +41,10 @@ export function makeRockDetail(size = 512, seed = 7) {
     for (let i = 0; i < size; i++) {
       const o = (j * size + i) * 4;
       // height with the cracks cut in
-      const hh = at(i, j) - atC(i, j) * 0.75;
-      const strength = 2.4;
-      const dx = (at(i + 1, j) - atC(i + 1, j) * 0.75 - hh) * strength;
-      const dy = (at(i, j + 1) - atC(i, j + 1) * 0.75 - hh) * strength;
+      const hh = at(i, j) - atC(i, j) * 0.42;
+      const strength = 1.5;
+      const dx = (at(i + 1, j) - atC(i + 1, j) * 0.42 - hh) * strength;
+      const dy = (at(i, j + 1) - atC(i, j + 1) * 0.42 - hh) * strength;
       let nx = -dx, ny = -dy, nz = 1;
       const l = Math.hypot(nx, ny, nz);
       nx /= l; ny /= l; nz /= l;

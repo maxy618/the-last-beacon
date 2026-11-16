@@ -13,6 +13,7 @@ import { Terrain } from './world/terrain.js';
 import { Ocean } from './world/water.js';
 import { makeRockDetail } from './world/detail.js';
 import { Vegetation } from './world/vegetation.js';
+import { placeSites } from './world/sites.js';
 import { CollisionWorld } from './play/collision.js';
 import { Player } from './play/player.js';
 import { Hud } from './ui/hud.js';
@@ -74,7 +75,6 @@ class Game {
 
     await boot('raising the island', 0.28);
     this.island = new Island(seed);
-
     await boot('hanging the weather', 0.5);
     this.atmos = new Atmosphere(rng);
     this.scene.add(this.atmos.sky);
@@ -85,20 +85,102 @@ class Game {
     this.terrain = new Terrain(this.island, this.atmos, this.engine.q, this.detailTex);
     this.scene.add(this.terrain.group);
 
-    await boot('sowing the moor', 0.72);
-    this.vegetation = new Vegetation(this.island, this.rng, this.atmos);
-    this.scene.add(this.vegetation.group);
-
-    await boot('flooding the bay', 0.78);
+    await boot('flooding the bay', 0.72);
     this.ocean = new Ocean(this.island, this.atmos);
     this.scene.add(this.ocean.mesh);
 
-    await boot('finding your feet', 0.9);
+    await boot('raising the buildings', 0.80);
     this.collision = new CollisionWorld(this.island);
+    const placed = placeSites(this.island, this.collision, this.scene, this.atmos, this.rng);
+    this.sites = placed.sites;
+    this.buildings = placed.buildings;
+    this.scene.add(this.buildings.group);
+    for (const m of placed.made) console.log('site', m.type, m.x?.toFixed(1), m.z?.toFixed(1));
+
+    // where the player lands, and what needs to stay clear of it
+    const landing = this._pickLanding(this.rng);
+    this.landing = landing;
+    const avoid = [[landing[0], landing[1], 9]];
+    for (const k of Object.keys(this.sites)) {
+      const s = this.sites[k];
+      avoid.push([s.x, s.z, k === 'lighthouse' ? 10 : 7]);
+    }
+
+    await boot('sowing the moor', 0.90);
+    this.vegetation = new Vegetation(this.island, this.rng, this.atmos, avoid);
+    this.scene.add(this.vegetation.group);
+
+    if (this.vegetation) {
+      // trunk colliders
+      this.vegetation.colliders((x, y, z, r) => {
+        this.collision.addBox(x - r, y, z - r, x + r, y + 9, z + r, { tag: 'tree' });
+      });
+    }
+    this.collision.rebuild();
+
+    await boot('finding your feet', 0.95);
+    this.collision = this.collision || new CollisionWorld(this.island);
     this.player = new Player(this.island, this.collision, this.camera);
-    const start = this._pickLanding(rng);
-    this.player.teleport(start[0], Math.max(this.island.heightAt(start[0], start[1]), 0.4) + 0.2, start[1]);
-    this.player.yaw = Math.atan2(-(0 - start[0]), -(0 - start[1]));
+    const lb = this.sites.lighthouse;
+    const lampY = this.island.heightAt(lb.x, lb.z) + 14.5;
+    let best = null, bestScore = -1e9;
+    // the ideal spawn is a grassy hollow with a view of the headland
+    for (let i = 0; i < 24000; i++) {
+      const x = rng.range(-460, 460), z = rng.range(-460, 460);
+      const h = this.island.heightAt(x, z);
+      if (h < 1.5 || h > 52) continue;
+      const slope = this.island.macroSlopeAt(x, z);
+      if (slope > 0.22) continue;
+      const d = Math.hypot(x - lb.x, z - lb.z);
+      if (d < 130 || d > 780) continue;
+      // how steep the ground is ahead (20 m) towards the lighthouse
+      const nx = (lb.x - x) / d, nz = (lb.z - z) / d;
+      const rise = this.island.heightAt(x + nx * 20, z + nz * 20) - h;
+      if (rise > 6) continue;
+      // is the lamp visible?
+      let blocked = 0;
+      const steps = Math.max(2, Math.floor(d / 10));
+      for (let k = 1; k < steps; k++) {
+        const t = k / steps;
+        const ground = this.island.heightAt(x + (lb.x - x) * t, z + (lb.z - z) * t);
+        const line = h + 1.7 + (lampY - (h + 1.7)) * t;
+        if (ground > line - 1.2) blocked++;
+      }
+      if (blocked > 2) continue;
+      const surf = this.island.surfaceAt(x, z);
+      const score = surf.grass * 2.2 + surf.moss * 0.8 + surf.sand * 0.8 + (blocked === 0 ? 6 : 0)
+        - slope * 8 - rise * 0.8 - Math.abs(d - 430) * 0.004 + rng() * 0.5;
+      if (score > bestScore) { bestScore = score; best = [x, z]; }
+    }
+    if (!best) {
+      for (const [x, z] of this.island.coastRing) {
+        const h = this.island.heightAt(x, z);
+        if (h < 0.4 || h > 7) continue;
+        const slope = this.island.macroSlopeAt(x, z);
+        const d = Math.hypot(x - lb.x, z - lb.z);
+        if (d < 90) continue;
+        const surf = this.island.surfaceAt(x, z);
+        const score = surf.sand * 3.0 - slope * 6.0 + rng() * 0.3;
+        if (score > bestScore) { bestScore = score; best = [x, z]; }
+      }
+    }
+    const spawn = best || (this.landing ? this.landing : this._pickLanding(rng));
+    this.landing = spawn;
+    this.player.teleport(spawn[0], Math.max(this.island.heightAt(spawn[0], spawn[1]), 0.4) + 0.3, spawn[1]);
+    // face along the coast towards the lighthouse: the sea on one side and the
+    // island on the other, the way a castaway would actually see it
+    {
+      let tx = -spawn[1], tz = spawn[0];
+      const tl = Math.hypot(tx, tz) || 1;
+      tx /= tl; tz /= tl;
+      const toL = [lb.x - spawn[0], lb.z - spawn[1]];
+      if (tx * toL[0] + tz * toL[1] < 0) { tx = -tx; tz = -tz; }
+      this.player.yaw = Math.atan2(-tx, -tz);
+    }
+    if (this.island.heightAt(spawn[0], spawn[1]) < 0.3) {
+      const found = this._nearestDry(spawn);
+      if (found) this.player.teleport(found[0], this.island.heightAt(found[0], found[1]) + 0.25, found[1]);
+    }
 
     this.hud.setObjective('Reach the lighthouse on the headland');
     await boot('letting the light in', 1.0);
@@ -113,6 +195,18 @@ class Game {
     this._loop();
   }
 
+  /** Sweep outward from a point until we stand on something dry. */
+  _nearestDry(from) {
+    for (let radius = 4; radius < 260; radius += 3) {
+      for (let k = 0; k < 26; k++) {
+        const a = (k / 26) * Math.PI * 2;
+        const x = from[0] + Math.cos(a) * radius, z = from[1] + Math.sin(a) * radius;
+        if (this.island.heightAt(x, z) > 0.6) return [x, z];
+      }
+    }
+    return null;
+  }
+
   /** A sheltered beach on the seaward side of the island, looking inland. */
   _pickLanding(rng) {
     const candidates = [];
@@ -121,16 +215,28 @@ class Game {
       const r = rng.range(200, 470);
       const x = Math.cos(a) * r, z = Math.sin(a) * r;
       const h = this.island.heightAt(x, z);
-      if (h < 0.6 || h > 5.5) continue;
-      const slope = this.island.slopeAt(x, z);
+      if (h < 1.0 || h > 5.5) continue;
+      const slope = this.island.macroSlopeAt(x, z);
       if (slope > 0.16) continue;
       const inland = this.island.heightAt(x * 0.86, z * 0.86);
       if (inland < 6) continue;
       candidates.push([x, z, slope + Math.abs(h - 1.6) * 0.05]);
     }
-    if (!candidates.length) return this.island.findShore(rng, { flat: true }) || [0, 0];
-    candidates.sort((a, b) => a[2] - b[2]);
-    return [candidates[0][0], candidates[0][1]];
+    if (candidates.length) {
+      candidates.sort((a, b) => a[2] - b[2]);
+      return [candidates[0][0], candidates[0][1]];
+    }
+    // fallback: any gently sloping grassy land
+    let best = null, bestScore = -1e9;
+    for (let i = 0; i < 4000; i++) {
+      const x = rng.range(-380, 380), z = rng.range(-380, 380);
+      const h = this.island.heightAt(x, z);
+      if (h < 2.5) continue;
+      const slope = this.island.macroSlopeAt(x, z);
+      const score = -slope * 40 - Math.abs(h - 12) * 0.15 + rng() * 3;
+      if (score > bestScore) { bestScore = score; best = [x, z]; }
+    }
+    return best || [0, 0];
   }
 
   _applyLightColors() {
@@ -205,6 +311,8 @@ class Game {
       const r = this.player.update(dt, input);
       this._lastStep = r;
     }
+    this._updateDoors(dt);
+    this._interactionUpdate();
     this.atmos.update(this.camera, this.time, dt);
     this.ocean.update(this.time);
     if (this.vegetation) this.vegetation.update(this.camera, dt, this.time);
@@ -212,6 +320,44 @@ class Game {
     this._updateSun();
     this.engine.renderer.shadowMap.needsUpdate = true;
     this.hud.update(dt);
+  }
+
+  /** Doors swing open and shut with momentum. */
+  _updateDoors(dt) {
+    if (!this.buildings) return;
+    for (const d of this.buildings.doors) {
+      const target = d.open ? 1.9 : 0;
+      d.swing = d.swing + (target - d.swing) * Math.min(1, dt * 6.5);
+      d.pivot.rotation.y = d.pivot.userData.baseYaw + d.swing * 1.9;
+      if (d.open !== (d.collider.enabled === false)) {
+        d.collider.enabled = !d.open;
+        d.doorOpenTime = this.time;
+        this.collision.rebuild();
+      }
+    }
+  }
+
+  /** Detect what the player is pointing at and show the prompt. */
+  _interactionUpdate() {
+    if (!this.buildings) return;
+    const cam = this.camera.position;
+    const facing = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
+    let best = null, bestScore = 1e9;
+    for (const d of this.buildings.doors) {
+      const dx = d.x - cam.x, dz = d.z - cam.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist > 2.0) continue;
+      const score = dist;
+      if (score < bestScore) { bestScore = score; best = d; }
+    }
+    this._bestDoor = best;
+    if (best) {
+      this.hud.setPrompt('E', best.open ? 'Close the door' : 'Open the door');
+      if (this.input.hit('KeyE')) best.open = !best.open;
+    } else {
+      this.hud.setPrompt(null, null);
+    }
+    this.hud.setCrosshair(!this.paused, !!best);
   }
 
   /** Place the camera freely (development and screenshot tooling). */

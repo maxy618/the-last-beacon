@@ -83,24 +83,24 @@ function trunkGeometry(height, baseR, topR, bendDir, bendAmount, segments = 9, s
   return g;
 }
 
-/** A knobbly canopy disc - a displaced, flattened sphere. */
+/** A knobbly canopy blob - a displaced, flattened sphere with a few lobes. */
 function canopyGeometry(radius, height, rng, lumps = 5, flattenY = 0.55) {
   const g = new THREE.IcosahedronGeometry(radius, 1);
   const p = g.attributes.position;
   const seeds = [];
   for (let k = 0; k < lumps; k++) {
-    seeds.push([rng.range(-0.7, 0.7), rng.range(-0.35, 0.35), rng.range(-0.7, 0.7), rng.range(0.55, 1.05)]);
+    seeds.push([rng.range(-0.75, 0.75), rng.range(-0.3, 0.3), rng.range(-0.75, 0.75), rng.range(0.5, 1.1)]);
   }
   for (let i = 0; i < p.count; i++) {
     let x = p.getX(i), y = p.getY(i), z = p.getZ(i);
-    const n = Math.sqrt(x * x + y * y + z * z) || 1;
+    const n = Math.hypot(x, y, z) || 1;
     x /= n; y /= n; z /= n;
     let r = 1;
     for (const [sx, sy, sz, amp] of seeds) {
-      const d = Math.hypot(x - sx, y - sy, z - sz);
-      r += amp * Math.exp(-d * d * 2.6) * 0.42;
+      const d = Math.hypot(x - sx, (y - sy) * 1.4, z - sz);
+      r += amp * Math.exp(-d * d * 2.4) * 0.38;
     }
-    r *= 1 + (noise2(x * 2.1 + 7, y * 2.1 - 3, 5) - 0.5) * 0.3;
+    r *= 1 + (noise2(x * 1.7 + 7, y * 1.7 - 3, 5) - 0.5) * 0.42;
     p.setXYZ(i, x * radius * r, y * radius * r * flattenY, z * radius * r);
   }
   g.computeVertexNormals();
@@ -110,43 +110,68 @@ function canopyGeometry(radius, height, rng, lumps = 5, flattenY = 0.55) {
 
 function makePineGeometry(rng, lean, height = 9) {
   const items = [];
-  const trunkCol = 0x33241a;
+  const trunkCol = 0x2e231b;
   const bend = lean;
   const bendDir = rng.range(0, Math.PI * 2);
-  const trunk = trunkGeometry(height, 0.34, 0.16, bendDir, bend, 10, 7);
+  const trunk = trunkGeometry(height, 0.32, 0.13, bendDir, bend, 11, 7);
   items.push({ geo: trunk, color: trunkCol });
-  // canopy: stacked discs that shrink towards the top, all blown downwind
-  const layers = [
-    { t: 0.52, r: 2.05, y: 0.62 }, { t: 0.66, r: 1.75, y: 0.72 },
-    { t: 0.79, r: 1.35, y: 0.82 }, { t: 0.89, r: 0.92, y: 0.91 },
+  // wind-bent crown: several overlapping clumps dense enough to merge into a silhouette
+  const green = new THREE.Color().setHSL(0.37 + rng.range(-0.035, 0.03), 0.36, rng.range(0.065, 0.095));
+  const clumps = [
+    { t: 0.50, r: 1.32, off: 0.75, flat: 0.52 },
+    { t: 0.58, r: 1.18, off: 0.85, flat: 0.50 },
+    { t: 0.67, r: 1.00, off: 0.95, flat: 0.50 },
+    { t: 0.76, r: 0.80, off: 0.8, flat: 0.53 },
+    { t: 0.85, r: 0.58, off: 0.6, flat: 0.58 },
+    { t: 0.93, r: 0.36, off: 0.28, flat: 0.62 },
   ];
-  const green = new THREE.Color().setHSL(0.36 + rng.range(-0.03, 0.03), 0.32, rng.range(0.075, 0.105));
-  for (const L of layers) {
+  for (const L of clumps) {
     const bendY = bend * L.t * L.t;
-    const c = canopyGeometry(L.r, undefined, rng, 5, 0.42);
-    const m = new THREE.Matrix4();
-    m.makeTranslation(Math.cos(bendDir) * bendY, height * L.t, Math.sin(bendDir) * bendY);
-    items.push({ geo: c, matrix: m, color: green.getHex() });
+    const nSub = 4;
+    for (let s = 0; s < nSub; s++) {
+      const rr = L.r * rng.range(0.55, 1.0);
+      const c = canopyGeometry(rr, undefined, rng, 6, L.flat);
+      const a = (s / nSub) * Math.PI * 2 + rng.range(-0.7, 0.7);
+      const rad = L.r * rng.range(0.3, 0.72);
+      const m = new THREE.Matrix4();
+      m.makeTranslation(
+        Math.cos(bendDir) * (bendY + L.off) + Math.cos(a) * rad,
+        height * L.t + rng.range(-0.3, 0.3),
+        Math.sin(bendDir) * (bendY + L.off) + Math.sin(a) * rad
+      );
+      items.push({ geo: c, matrix: m, color: green.getHex() });
+    }
   }
   return mergeGeoms(items);
 }
 
 function makeSpireGeometry(rng, lean, height = 13) {
   const items = [];
-  const trunkCol = 0x2b2018;
+  const trunkCol = 0x241c15;
   const bendDir = rng.range(0, Math.PI * 2);
-  const trunk = trunkGeometry(height, 0.27, 0.10, bendDir, lean * 1.3, 12, 6);
+  const trunk = trunkGeometry(height, 0.24, 0.08, bendDir, lean * 1.4, 12, 6);
   items.push({ geo: trunk, color: trunkCol });
-  const green = new THREE.Color().setHSL(0.34 + rng.range(-0.02, 0.03), 0.30, rng.range(0.055, 0.085));
+  // a shaggy conical crown: stacked overlapping ragged clumps
+  const green = new THREE.Color().setHSL(0.35 + rng.range(-0.03, 0.03), 0.32, rng.range(0.05, 0.075));
   const layers = 7;
   for (let k = 0; k < layers; k++) {
-    const t = 0.30 + (k / (layers - 1)) * 0.66;
-    const r = 0.55 + (1 - t) * 1.05;
-    const bendY = lean * 1.3 * t * t;
-    const c = canopyGeometry(r, undefined, rng, 4, 0.5);
-    const m = new THREE.Matrix4();
-    m.makeTranslation(Math.cos(bendDir) * bendY, height * t, Math.sin(bendDir) * bendY);
-    items.push({ geo: c, matrix: m, color: green.getHex() });
+    const t = 0.34 + (k / (layers - 1)) * 0.62;
+    const r = 1.30 * (1 - t * 0.82) + 0.28;
+    const bendY = lean * 1.4 * t * t;
+    const nSub = 2;
+    for (let s = 0; s < nSub; s++) {
+      const rr = r * rng.range(0.75, 1.1);
+      const c = canopyGeometry(rr, undefined, rng, 5, 0.62);
+      const a = rng.range(0, Math.PI * 2);
+      const rad = r * 0.42 * rng.range(0.4, 1.0);
+      const m = new THREE.Matrix4();
+      m.makeTranslation(
+        Math.cos(bendDir) * bendY + Math.cos(a) * rad,
+        height * t + rng.range(-0.25, 0.25),
+        Math.sin(bendDir) * bendY + Math.sin(a) * rad
+      );
+      items.push({ geo: c, matrix: m, color: green.getHex() });
+    }
   }
   return mergeGeoms(items);
 }
@@ -217,10 +242,11 @@ function makeBrackenGeometry(rng) {
 }
 
 export class Vegetation {
-  constructor(island, rng, atmos) {
+  constructor(island, rng, atmos, avoid = []) {
     this.island = island;
     this.rng = rng;
     this.atmos = atmos;
+    this.avoid = avoid;
     this.group = new THREE.Group();
     this.group.name = 'vegetation';
     this.wind = { value: 0 };
@@ -266,6 +292,15 @@ export class Vegetation {
     this.trunkMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
   }
 
+  /** Is this point cleared of plants? */
+  _nearAvoid(x, z) {
+    for (const [ax, az, r] of this.avoid) {
+      const dx = x - ax, dz = z - az;
+      if (dx * dx + dz * dz < r * r) return true;
+    }
+    return false;
+  }
+
   /** Scatter the island. Deterministic from the seed. */
   _build() {
     const island = this.island, rng = this.rng;
@@ -290,6 +325,7 @@ export class Vegetation {
       if (r > density * 0.075) continue;
       // keep the very centre clear - the player starts near the shore
       if (island.seaDistAt(x, z) < 3) continue;
+      if (this._nearAvoid(x, z)) continue;
       const kind = rng.chance(0.56) ? 0 : rng.chance(0.5) ? 1 : rng.chance(0.72) ? 2 : 3;
       trees[kind].push([x, surf.height, z, rng.range(0.72, 1.35), rng.range(0, Math.PI * 2)]);
     }
@@ -298,6 +334,7 @@ export class Vegetation {
     for (let i = 0; i < 24000; i++) {
       const x = rng.range(-S / 2, S / 2);
       const z = rng.range(-S / 2, S / 2);
+      if (this._nearAvoid(x, z)) continue;
       const surf = island.surfaceAt(x, z);
       if (surf.height < 0.7) continue;
       if (surf.slope > 0.34) continue;
@@ -313,6 +350,7 @@ export class Vegetation {
     for (let i = 0; i < 9000; i++) {
       const x = rng.range(-S / 2, S / 2);
       const z = rng.range(-S / 2, S / 2);
+      if (this._nearAvoid(x, z)) continue;
       const surf = island.surfaceAt(x, z);
       if (surf.height < 0.4) continue;
       const cliff = smoothstep(0.3, 0.62, surf.slope) + clamp01(1 - surf.seaDist / 22) * 0.35;
@@ -432,6 +470,7 @@ export class Vegetation {
     for (let i = 0; i < 260000; i++) {
       const x = rng.range(-S / 2, S / 2);
       const z = rng.range(-S / 2, S / 2);
+      if (this._nearAvoid(x, z)) continue;
       const surf = island.surfaceAt(x, z);
       if (surf.grass <= 0.06) continue;
       const m = surf.moisture;

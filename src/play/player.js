@@ -110,6 +110,7 @@ export class Player {
     const sdt = dt / steps;
     let grounded = false;
     let groundY = -Infinity;
+    const startX = this.pos.x, startZ = this.pos.z, startY = this.pos.y;
     for (let s = 0; s < steps; s++) {
       this.pos.x += this.vel.x * sdt;
       this.pos.y += this.vel.y * sdt;
@@ -145,15 +146,43 @@ export class Player {
     this.grounded = grounded;
     this.lastGroundY = groundY;
 
-    // ---- steep terrain blocks the player
+    // ---- too steep to walk up: undo the climb, keep the walk along the contour
+    if (this.island) {
+      const hNow = this.island.heightAt(this.pos.x, this.pos.z);
+      const rise = hNow - startY;
+      const run = Math.hypot(this.pos.x - startX, this.pos.z - startZ);
+      if (grounded && run > 0.02 && rise / run > 0.72) {
+        // try sliding along the contour instead: keep the sideways component only
+        const n = this.island.macroNormalAt(this.pos.x, this.pos.z, 2.2);
+        if (n[1] < 0.86) {
+          const ux = -n[0], uz = -n[2];
+          const ul = Math.hypot(ux, uz) || 1;
+          const sideX = this.vel.x - (this.vel.x * (ux / ul) + this.vel.z * (uz / ul)) * (ux / ul);
+          const sideZ = this.vel.z - (this.vel.x * (ux / ul) + this.vel.z * (uz / ul)) * (uz / ul);
+          this.pos.x = startX; this.pos.z = startZ; this.pos.y = startY;
+          this.vel.x = sideX * 0.55;
+          this.vel.z = sideZ * 0.55;
+        }
+      }
+    }
+
+    // ---- steep terrain blocks the player; they slide instead of climbing
     if (grounded && this.island) {
-      const n = this.island.normalAt(this.pos.x, this.pos.z, 0.9);
-      if (n[1] < 0.62) {
-        // push back down the slope
+      const n = this.island.macroNormalAt(this.pos.x, this.pos.z, 2.2);
+      if (n[1] < 0.86) {
         const len = Math.hypot(n[0], n[2]) || 1;
-        const push = (1 - n[1]) * 26 * dt;
-        this.vel.x -= (n[0] / len) * push;
-        this.vel.z -= (n[2] / len) * push;
+        const ux = -n[0] / len, uz = -n[2] / len;          // the up-gradient direction
+        // cancel any drive into the slope
+        const into = this.vel.x * ux + this.vel.z * uz;
+        if (into > 0) {
+          const k = Math.min(1, dt * 9);
+          this.vel.x -= ux * into * k;
+          this.vel.z -= uz * into * k;
+        }
+        // slide down
+        const slide = (0.70 - n[1]) * 11 * dt;
+        this.vel.x += (n[0] / len) * slide;
+        this.vel.z += (n[2] / len) * slide;
       }
     }
 

@@ -323,22 +323,22 @@ export function makeTerrainMaterial(atmos, island, detailTex) {
         // --- sand and shingle
         vec3 sandC = mix(vec3(0.70, 0.63, 0.49), vec3(0.84, 0.78, 0.63), sandH);
         sandC *= 0.88 + 0.24 * fbm2(wp * 7.0, 2);
-        // --- turf: deep green, drier and browner on the ridges
-        vec3 turfA = vec3(0.115, 0.215, 0.062);
-        vec3 turfB = vec3(0.225, 0.300, 0.088);
-        vec3 turfC = vec3(0.315, 0.300, 0.115);
+        // --- turf: rich moorland green with drier, yellower tufts
+        vec3 turfA = vec3(0.085, 0.205, 0.045);
+        vec3 turfB = vec3(0.185, 0.315, 0.095);
+        vec3 turfC = vec3(0.320, 0.290, 0.105);
         vec3 grassC = mix(turfA, turfB, soilH);
-        grassC = mix(grassC, turfC, smoothstep(0.45, 0.85, patchH) * 0.75);
-        grassC *= 0.88 + 0.26 * fbm2(wp * 4.1, 2);
-        // --- rock: cool grey with warm bedding planes
-        vec3 rockA = vec3(0.245, 0.245, 0.255);
-        vec3 rockB = vec3(0.395, 0.375, 0.335);
+        grassC = mix(grassC, turfC, smoothstep(0.45, 0.85, patchH) * 0.7);
+        grassC *= 0.85 + 0.3 * fbm2(wp * 4.1, 2);
+        // --- rock: cool grey granite with warm bedding planes
+        vec3 rockA = vec3(0.235, 0.240, 0.255);
+        vec3 rockB = vec3(0.375, 0.360, 0.325);
         vec3 rockC2 = mix(rockA, rockB, det * 0.7 + 0.3);
         float strata = sin(vWorld.y * 0.62 + det * 2.6 + patchH * 2.0) * 0.5 + 0.5;
-        rockC2 *= 0.82 + 0.30 * strata;
-        rockC2 = mix(rockC2, vec3(0.255, 0.205, 0.150), fbm2(wp * 0.11 + 7.0, 2) * 0.40);
+        rockC2 *= 0.85 + 0.28 * strata;
+        rockC2 = mix(rockC2, vec3(0.235, 0.190, 0.140), fbm2(wp * 0.11 + 7.0, 2) * 0.35);
         // lichen and moss on the rock
-        rockC2 = mix(rockC2, vec3(0.30, 0.33, 0.22), smoothstep(0.55, 0.85, lichenH) * 0.42);
+        rockC2 = mix(rockC2, vec3(0.285, 0.315, 0.215), smoothstep(0.55, 0.85, lichenH) * 0.40);
         // --- moss
         vec3 mossC = mix(vec3(0.070, 0.155, 0.055), vec3(0.135, 0.245, 0.085), mossH);
 
@@ -346,14 +346,14 @@ export function makeTerrainMaterial(atmos, island, detailTex) {
         if (uDebugSplat > 0.5) alb = vec3(vSplat.x, vSplat.y, vSplat.z);
 
         // detail texture: cracks, mottling and a hint of damp in the hollows
-        vec4 dtl = texture2D(tDetail, wp * 0.55);
-        vec4 dtl2 = texture2D(tDetail, wp * 0.13 + 0.37);
+        vec4 dtl = texture2D(tDetail, wp * 0.30);
+        vec4 dtl2 = texture2D(tDetail, wp * 0.075 + 0.37);
         float camDist = length(vWorld - uCamPos);
         float dtlFade = 1.0 - smoothstep(15.0, 60.0, camDist);
         float crack = (1.0 - dtl.b) * dtlFade;
         float mott = dtl.a * 0.6 + dtl2.a * 0.4;
         alb *= 0.86 + 0.26 * mott;
-        alb *= 1.0 - crack * 0.11 * vSplat.z;
+        alb *= 1.0 - crack * 0.07 * vSplat.z;
         // exposed rock on steep faces: cooler, bluer, faintly banded
         float banded = smoothstep(0.3, 0.8, vSplat.z * slope) * (0.5 + 0.5 * sin(vWorld.y * 0.30 + det * 2.2));
         alb *= 1.0 - banded * 0.22;

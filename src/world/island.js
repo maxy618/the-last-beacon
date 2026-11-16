@@ -459,7 +459,16 @@ export class Island {
     return [nx / l, ny / l, nz / l];
   }
 
-  slopeAt(x, z) { return 1 - this.normalAt(x, z)[1]; }
+  /**
+   * The slope over a few metres - what a person or a building experiences,
+   * not the centimeter-scale wobble the terrain has.
+   */
+  macroNormalAt(x, z, e = 3.4) {
+    return this.normalAt(x, z, e);
+  }
+  macroSlopeAt(x, z) {
+    return 1 - this.macroNormalAt(x, z)[1];
+  }
 
   /**
    * Cheap ambient occlusion: how much of the sky this point can see.
@@ -492,7 +501,7 @@ export class Island {
    */
   surfaceAt(x, z) {
     const h = this.heightAt(x, z);
-    const n = this.normalAt(x, z);
+    const n = this.macroNormalAt(x, z);
     const slope = 1 - n[1];
     const sd = this.seaDistAt(x, z);
     const moist = clamp01(fbm2(x * 0.012 + 3.3, z * 0.012 - 7.1, this.seed ^ 0x3311, 4) * 1.6 - 0.25);

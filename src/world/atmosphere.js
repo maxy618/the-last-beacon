@@ -126,7 +126,8 @@ export class Atmosphere {
   constructor(rng) {
     this.rng = rng;
     const keys = Object.keys(WEATHERS);
-    this.weatherKey = rng.pick(['clear', 'clear', 'fair', 'fair', 'hazy', 'overcast', 'drizzle', 'squall']);
+    // fair skies are common; genuinely filthy weather is rare
+    this.weatherKey = rng.pick(['clear', 'clear', 'clear', 'fair', 'fair', 'fair', 'hazy', 'hazy', 'fair', 'clear', 'overcast', 'drizzle', 'squall']);
     this.weather = WEATHERS[this.weatherKey];
     this.hour = rng.range(15.2, 19.4);
 

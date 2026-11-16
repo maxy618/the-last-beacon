@@ -1,0 +1,11 @@
+import { chromium } from 'playwright';
+const CHROME = 'C:/Program Files/Google/Chrome/Application/chrome.exe';
+const browser = await chromium.launch({ headless: true, executablePath: CHROME, args: ['--no-sandbox', '--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist'] });
+const page = await browser.newPage();
+page.on('console', (m) => { if (m.text().startsWith('site')) console.log(m.text()); });
+await page.addInitScript(() => { try { localStorage.setItem('tlb.seed', 'skerry'); } catch (e) {} });
+await page.goto('http://127.0.0.1:5173/', { waitUntil: 'domcontentloaded' });
+await page.waitForFunction(() => !!(window.__game && window.__game.atmos), null, { timeout: 90000 });
+const info = await page.evaluate(() => ({ weather: window.__game.atmos.weatherKey, hour: window.__game.atmos.hour.toFixed(2), fogDensity: window.__game.atmos.fogDensity, exposure: window.__game.engine.q.name }));
+console.log(JSON.stringify(info));
+await browser.close();
