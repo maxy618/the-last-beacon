@@ -109,7 +109,6 @@ export class Island {
 
         let h = elev * land - 31 * Math.pow(1 - land, 1.45);
 
-        // a low rocky shelf just offshore so the sea reads as having depth
         H[IDX(i, j, R)] = h;
         landMask[IDX(i, j, R)] = land;
       }
@@ -119,8 +118,9 @@ export class Island {
     this.landMask = landMask;
     this.step = step;
 
-    this._erode(6, 0.62);
+    this._erode(3, 0.95);
     this._smooth(1);
+    this._addFineRelief();
     this._computeSeaDistance();
 
     this._carveRivers();
@@ -160,6 +160,30 @@ export class Island {
     }
     // nothing may leave this range
     for (let i = 0; i < H.length; i++) H[i] = clamp(H[i], -34, 165);
+  }
+
+  /**
+   * Metre-scale relief, added after the erosion so it survives it.
+   * Ridges get rough flanks; the turf stays smoother.
+   */
+  _addFineRelief() {
+    const R = WORLD.res, S = WORLD.size, H = this.height;
+    for (let j = 0; j < R; j++) {
+      const wz = (j + 0.5) / R * S - S / 2;
+      for (let i = 0; i < R; i++) {
+        const c = IDX(i, j, R);
+        const h = H[c];
+        if (h < 0.4) continue;
+        const wx = (i + 0.5) / R * S - S / 2;
+        const rough = 0.30 + 0.70 * fbm2(wx * 0.0055 + 44, wz * 0.0055 - 19, this.seed ^ 0x5b1f, 3);
+        const hf = fbm2(wx * 0.055 + 5.5, wz * 0.055 - 2.5, this.seed ^ 0x3c9d, 4) - 0.5;
+        const hf2 = fbm2(wx * 0.27 - 1.5, wz * 0.27 + 4.5, this.seed ^ 0x71b3, 2) - 0.5;
+        // gullies: ridged noise carves down into the slopes
+        const gully = Math.pow(ridged2(wx * 0.038 + 8.5, wz * 0.038 - 3.5, this.seed ^ 0x2c4e, 4), 2.4);
+        const amp = 2.4 * rough * smoothstep(1.5, 12, h);
+        H[c] = h + (hf * 3.0 + hf2 * 0.8 - gully * 2.0) * amp * 0.55;
+      }
+    }
   }
 
   _smooth(passes) {
@@ -363,6 +387,49 @@ export class Island {
     this.coastRing = ring;
   }
 
+  /**
+   * Bake the island's own shadow in the sun's direction.
+   *
+   * A dynamic shadow map only covers the few metres around the player, which
+   * leaves distant mountains looking flat and unlit. Marching the heightmap
+   * towards the sun once, at load time, gives the whole island the long
+   * shadows it should have - for free, at runtime.
+   */
+  bakeSunShadow(sunDir, res = 512) {
+    const R = WORLD.res, S = WORLD.size, H = this.height;
+    const step = S / res;
+    const hl = Math.hypot(sunDir.x, sunDir.z) || 1e-4;
+    const ux = sunDir.x / hl, uz = sunDir.z / hl;
+    const tanE = sunDir.y / hl;
+    const cell = S / R;
+    const out = new Uint8Array(res * res);
+    const clampI = (v) => (v < 0 ? 0 : v > R - 1 ? R - 1 : v);
+    for (let j = 0; j < res; j++) {
+      const wz = (j + 0.5) * step - S / 2;
+      const gj = clampI(Math.round((wz / S + 0.5) * R - 0.5));
+      for (let i = 0; i < res; i++) {
+        const wx = (i + 0.5) * step - S / 2;
+        const gi = clampI(Math.round((wx / S + 0.5) * R - 0.5));
+        const h0 = H[gi + R * gj];
+        let pen = 1e9;
+        for (let s = 2; s <= 120; s++) {
+          const t = s * 3.2;
+          const px = gi + (ux * t) / cell;
+          const pz = gj + (uz * t) / cell;
+          if (px < 0 || pz < 0 || px > R - 1 || pz > R - 1) break;
+          const hh = H[(px | 0) + R * (pz | 0)];
+          const need = h0 + tanE * t;
+          const d = need - hh;
+          if (d < pen) pen = d;
+          if (pen < -4) break;
+        }
+        const shade = 1 - smoothstep(-3.0, 0.0, pen);
+        out[j * res + i] = Math.round((1 - shade) * 255);
+      }
+    }
+    return out;
+  }
+
   // -- sampling ------------------------------------------------------------
   _gridToWorld(g) { return (g + 0.5) / WORLD.res * WORLD.size - WORLD.size / 2; }
 
@@ -432,14 +499,25 @@ export class Island {
     const alt = clamp01((h - 42) / 60);
     const alt2 = clamp01((h - 88) / 34);
 
-    const sand = clamp01(smoothstep(5.0, 1.2, h) * (1 - smoothstep(0.24, 0.5, slope)));
-    const shingle = clamp01(smoothstep(9.0, 3.0, h) * (1 - smoothstep(0.34, 0.62, slope))) * (1 - sand * 0.7);
-    const rock = clamp01(smoothstep(0.30, 0.62, slope) + smoothstep(0.6, 0.85, slope));
-    const grass = clamp01((1 - sand) * (1 - shingle * 0.55) * smoothstep(0.34, 0.14, slope) * (1 - alt2 * 0.8));
-    const moss = clamp01(moist * (1 - sand) * smoothstep(0.45, 0.2, slope) * (1 - alt * 0.5));
-    const scree = clamp01(smoothstep(0.42, 0.7, slope) * smoothstep(0.15, 0.5, alt) * (1 - alt2));
+    const sandW = clamp01(smoothstep(4.5, 0.8, h) * (1 - smoothstep(0.20, 0.44, slope)));
+    const shingleW = clamp01(smoothstep(9.0, 2.5, h) * (1 - smoothstep(0.26, 0.52, slope))) * (1 - sandW * 0.8);
+    const grassW = clamp01((1 - sandW) * (1 - shingleW * 0.6) * smoothstep(0.46, 0.20, slope) * (1 - alt2 * 0.85) * (0.55 + 0.45 * moist));
+    const mossW = clamp01(moist * (1 - sandW) * smoothstep(0.55, 0.28, slope) * (1 - alt * 0.6) * 0.75);
+    const screeW = clamp01(smoothstep(0.40, 0.68, slope) * smoothstep(0.12, 0.45, alt) * (1 - alt2));
+    let rockW = clamp01(smoothstep(0.30, 0.62, slope) + smoothstep(0.5, 0.85, slope) + screeW * 0.6);
+    // the weights always cover the surface: whatever is not grass or sand is rock
+    rockW = Math.max(rockW, 1 - (sandW + shingleW * 0.4 + grassW + mossW));
     const snow = clamp01(alt2 * alt2 * smoothstep(0.55, 0.28, slope));
-    return { height: h, normal: n, slope, seaDist: sd, moisture: moist, sand, shingle, grass, rock, moss, scree, snow, ao: this.aoAt(x, z) };
+    const wSand = clamp01(sandW + shingleW * 0.4);
+    const wGrass = clamp01(grassW);
+    const wRock = clamp01(rockW);
+    const wMoss = clamp01(mossW);
+    const sum = wSand + wGrass + wRock + wMoss || 1;
+    return {
+      height: h, normal: n, slope, seaDist: sd, moisture: moist,
+      sand: wSand / sum, grass: wGrass / sum, rock: wRock / sum, moss: wMoss / sum,
+      snow, ao: this.aoAt(x, z),
+    };
   }
 
   /** Is this point inside the island's land area? */

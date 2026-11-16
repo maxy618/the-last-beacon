@@ -11,6 +11,8 @@ import { Island } from './world/island.js';
 import { Atmosphere } from './world/atmosphere.js';
 import { Terrain } from './world/terrain.js';
 import { Ocean } from './world/water.js';
+import { makeRockDetail } from './world/detail.js';
+import { Vegetation } from './world/vegetation.js';
 import { CollisionWorld } from './play/collision.js';
 import { Player } from './play/player.js';
 import { Hud } from './ui/hud.js';
@@ -79,8 +81,13 @@ class Game {
     this._applyLightColors();
 
     await boot('laying the ground', 0.62);
-    this.terrain = new Terrain(this.island, this.atmos, this.engine.q);
+    this.detailTex = makeRockDetail(512, seed ^ 0x9e37);
+    this.terrain = new Terrain(this.island, this.atmos, this.engine.q, this.detailTex);
     this.scene.add(this.terrain.group);
+
+    await boot('sowing the moor', 0.72);
+    this.vegetation = new Vegetation(this.island, this.rng, this.atmos);
+    this.scene.add(this.vegetation.group);
 
     await boot('flooding the bay', 0.78);
     this.ocean = new Ocean(this.island, this.atmos);
@@ -93,8 +100,10 @@ class Game {
     this.player.teleport(start[0], Math.max(this.island.heightAt(start[0], start[1]), 0.4) + 0.2, start[1]);
     this.player.yaw = Math.atan2(-(0 - start[0]), -(0 - start[1]));
 
+    this.hud.setObjective('Reach the lighthouse on the headland');
     await boot('letting the light in', 1.0);
     this.terrain.update(this.player.pos.x, this.player.pos.z, 30);
+    if (this.vegetation) this.vegetation.update(this.camera, 0, 1);
     this.engine.renderer.shadowMap.needsUpdate = true;
     this._updateSun();
 
@@ -128,17 +137,17 @@ class Game {
     const sc = this.atmos.sunColor;
     const mx = Math.max(sc.r, sc.g, sc.b, 1e-3);
     this.sun.color.setRGB(sc.r / mx, sc.g / mx, sc.b / mx);
-    this.sun.intensity = mx * 2.9;
+    this.sun.intensity = mx * 3.4;
     const sa = this.atmos.skyAmbient;
     const hm = Math.max(sa.r, sa.g, sa.b, 1e-3);
     this.hemi.color.setRGB(sa.r / hm, sa.g / hm, sa.b / hm);
-    this.hemi.intensity = hm * 1.15;
+    this.hemi.intensity = hm * 1.5;
     const gb = this.atmos.groundBounce;
     this.hemi.groundColor.setRGB(gb.r / 1.4, gb.g / 1.4, gb.b / 1.4);
   }
 
   _updateSun() {
-    const p = this.player.pos;
+    const p = this.camera.position;
     const d = this.atmos.sunDir;
     const dist = this.engine.q.shadowDistance;
     const texel = (2 * dist) / this.engine.q.shadowSize;
@@ -198,6 +207,7 @@ class Game {
     }
     this.atmos.update(this.camera, this.time, dt);
     this.ocean.update(this.time);
+    if (this.vegetation) this.vegetation.update(this.camera, dt, this.time);
     this.terrain.update(this.camera.position.x, this.camera.position.z, 2.5);
     this._updateSun();
     this.engine.renderer.shadowMap.needsUpdate = true;

@@ -95,7 +95,15 @@ async function shot(name) {
 async function place(x, z, yaw, pitch, height) {
   await page.evaluate(([x, z, yaw, pitch, height]) => {
     const g = window.__game;
-    const h = height === null || height === undefined ? g.island.heightAt(x, z) + 1.7 : height;
+    let h;
+    if (height === null || height === undefined) {
+      // stand above the rendered surface: take the max of the neighbours too
+      h = g.island.heightAt(x, z);
+      for (const [dx, dz] of [[1.4, 0], [-1.4, 0], [0, 1.4], [0, -1.4], [1.4, 1.4], [-1.4, -1.4]]) {
+        h = Math.max(h, g.island.heightAt(x + dx, z + dz));
+      }
+      h += 1.75;
+    } else h = height;
     g.setPhoto(x, h, z, yaw, pitch);
   }, [x, z, yaw, pitch, height]);
   await page.waitForTimeout(900);

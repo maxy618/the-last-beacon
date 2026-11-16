@@ -62,10 +62,13 @@ vec2 curl(vec2 p) {
 float cloudField(vec2 uv) {
   vec2 p = uv + curl(uv * 0.6) * 0.25 + uCloudDrift;
   float f = fbm2(p, 5);
-  float d = smoothstep(0.62 - uCloud * 0.45, 0.92 - uCloud * 0.42, f);
+  // a high threshold keeps the sky mostly open; coverage scales how far down it goes
+  float lo = mix(0.78, 0.40, uCloud);
+  float hi = lo + mix(0.26, 0.10, uCloud);
+  float d = smoothstep(lo, hi, f);
   // wispy edges
   float w = fbm2(p * 3.1 + 21.0, 3);
-  d = clamp(d + (w - 0.5) * 0.22 * (1.0 - uCloudSharp), 0.0, 1.0);
+  d = clamp(d + (w - 0.5) * 0.30 * (1.0 - uCloudSharp), 0.0, 1.0);
   return d;
 }
 
@@ -75,40 +78,43 @@ void main() {
 
   // --- base gradient
   float up = clamp(h, 0.0, 1.0);
-  vec3 sky = mix(uHorizon, uZenith, pow(up, 0.42));
+  vec3 sky = mix(uHorizon, uZenith, pow(up, 0.55));
   sky = mix(uSeaHaze, sky, smoothstep(-0.14, 0.015, h));
 
   // --- sun
   float cosT = dot(dir, uSunDir);
-  float glow = pow(max(cosT, 0.0), 2200.0) * 4.0
-             + pow(max(cosT, 0.0), 90.0) * 0.16
-             + pow(max(cosT, 0.0), 7.0) * 0.035;
-  sky += uSunColor * glow * (1.0 - uCloud * 0.75);
-  float disc = smoothstep(1.0 - uSunDisc, 1.0 - uSunDisc * 0.35, cosT);
-  sky += uSunColor * disc * 26.0 * (1.0 - uCloud * 0.9);
+  float glow = pow(max(cosT, 0.0), 2400.0) * 5.0
+             + pow(max(cosT, 0.0), 220.0) * 0.30
+             + pow(max(cosT, 0.0), 24.0) * 0.10
+             + pow(max(cosT, 0.0), 5.0) * 0.030;
+  sky += uSunColor * glow * (1.0 - uCloud * 0.6);
+  float disc = smoothstep(1.0 - uSunDisc, 1.0 - uSunDisc * 0.4, cosT);
+  sky += uSunColor * disc * 40.0 * (1.0 - uCloud * 0.85);
 
   // --- clouds on a plane above the island
   if (h > 0.012) {
-    float t = (1500.0 - uCamPos.y) / h;
-    vec2 uv = (uCamPos.xz + dir.xz * t) * 0.00042;
+    float t = (1100.0 - uCamPos.y) / h;
+    vec2 uv = (uCamPos.xz + dir.xz * t) * 0.00055;
     float d = cloudField(uv);
     if (d > 0.001) {
       // light the cloud from the sun side by sampling slightly toward it
-      vec2 sunOff = normalize(uSunDir.xz + 1e-5) * 0.006;
+      vec2 sunOff = normalize(uSunDir.xz + 1e-5) * 0.010;
       float ds = cloudField(uv + sunOff);
-      float lit = clamp((d - ds) * 2.2 + 0.55, 0.0, 1.0);
-      float rim = pow(max(cosT, 0.0), 12.0);
-      vec3 cloudCol = mix(uZenith * 0.85, uSunColor * 1.25, lit);
-      cloudCol = mix(cloudCol, uSunColor * 1.9, rim * 0.55 * lit);
-      cloudCol = mix(cloudCol * 0.55, cloudCol, lit);
-      float fade = smoothstep(0.012, 0.10, h);
-      sky = mix(sky, cloudCol, d * fade * (0.55 + 0.45 * uCloud));
+      float lit = clamp((d - ds) * 2.6 + 0.5, 0.0, 1.0);
+      // thicker cloud is darker underneath
+      float thick = smoothstep(0.15, 0.95, d);
+      vec3 cloudCol = mix(uZenith * 1.35 + vec3(0.16), uSunColor * 0.62 + vec3(0.05), lit);
+      cloudCol = mix(cloudCol, cloudCol * 0.42, thick * 0.8);
+      float rim = pow(max(cosT, 0.0), 18.0);
+      cloudCol += uSunColor * rim * 0.35 * lit;
+      float fade = smoothstep(0.012, 0.13, h);
+      sky = mix(sky, cloudCol, d * fade * (0.62 + 0.38 * uCloud));
     }
   }
 
   // --- haze near the horizon
-  float hazeBand = pow(1.0 - clamp(abs(h) * 3.4, 0.0, 1.0), 2.0);
-  sky = mix(sky, uHorizon * 1.04, hazeBand * uHaze * 0.55);
+  float hazeBand = pow(1.0 - clamp(abs(h) * 4.2, 0.0, 1.0), 2.0);
+  sky = mix(sky, uHorizon * 1.02, hazeBand * uHaze * 0.45);
 
   sky += vec3(0.9, 0.95, 1.0) * uLightning;
 
@@ -169,25 +175,25 @@ export class Atmosphere {
     this.sunColor.multiplyScalar(2.55 * strength);
 
     // sky
-    const dayZen = new THREE.Color(0.16, 0.33, 0.62);
-    const duskZen = new THREE.Color(0.10, 0.17, 0.36);
-    this.zenith.copy(dayZen).lerp(duskZen, t).lerp(new THREE.Color(0.30, 0.33, 0.36), overcast * 0.72);
+    const dayZen = new THREE.Color(0.085, 0.235, 0.560);
+    const duskZen = new THREE.Color(0.075, 0.135, 0.330);
+    this.zenith.copy(dayZen).lerp(duskZen, t).lerp(new THREE.Color(0.26, 0.30, 0.345), overcast * 0.78);
 
-    const dayHor = new THREE.Color(0.60, 0.72, 0.86);
-    const duskHor = new THREE.Color(0.86, 0.50, 0.30);
-    this.horizon.copy(dayHor).lerp(duskHor, Math.pow(t, 1.25)).lerp(new THREE.Color(0.55, 0.57, 0.60), overcast * 0.65);
+    const dayHor = new THREE.Color(0.46, 0.62, 0.82);
+    const duskHor = new THREE.Color(0.92, 0.48, 0.26);
+    this.horizon.copy(dayHor).lerp(duskHor, Math.pow(t, 1.3)).lerp(new THREE.Color(0.50, 0.53, 0.57), overcast * 0.7);
 
-    this.seaHaze.copy(this.horizon).multiplyScalar(0.55).lerp(new THREE.Color(0.05, 0.09, 0.13), 0.4);
+    this.seaHaze.copy(this.horizon).multiplyScalar(0.5).lerp(new THREE.Color(0.035, 0.075, 0.115), 0.45);
 
-    this.fogColor.copy(this.horizon).lerp(this.zenith, 0.34).multiplyScalar(0.82);
+    this.fogColor.copy(this.horizon).lerp(this.zenith, 0.45).multiplyScalar(0.72);
 
     // ambient: hemispherical light from the sky, scaled by weather
-    this.skyAmbient.copy(this.zenith).lerp(this.horizon, 0.45).multiplyScalar(1.55 * lerp(1, 0.55, overcast));
-    this.groundBounce.copy(this.horizon).lerp(new THREE.Color(0.20, 0.20, 0.17), 0.55).multiplyScalar(0.42 * lerp(1, 0.6, overcast));
+    this.skyAmbient.copy(this.zenith).lerp(this.horizon, 0.42).multiplyScalar(2.1 * lerp(1, 0.5, overcast));
+    this.groundBounce.copy(this.horizon).lerp(new THREE.Color(0.20, 0.20, 0.17), 0.6).multiplyScalar(0.4 * lerp(1, 0.6, overcast));
 
-    this.fogDensity = lerp(0.00075, 0.0032, w.haze) * lerp(1, 1.25, t);
-    this.fogHeightFalloff = lerp(0.022, 0.009, w.haze);
-    this.fogSunBoost = lerp(0.85, 0.28, overcast);
+    this.fogDensity = lerp(0.00042, 0.0019, w.haze) * lerp(1, 1.3, t);
+    this.fogHeightFalloff = lerp(0.018, 0.008, w.haze);
+    this.fogSunBoost = lerp(0.9, 0.3, overcast);
   }
 
   _buildSky() {

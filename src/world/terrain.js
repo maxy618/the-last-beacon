@@ -9,7 +9,11 @@
 // ---------------------------------------------------------------------------
 
 import * as THREE from 'three';
-import { NOISE_GLSL, ATMOS_GLSL } from '../shaders/common.js';import { clamp, clamp01, lerp, smoothstep } from '../core/math.js';
+import { NOISE_GLSL, ATMOS_GLSL } from '../shaders/common.js';
+import { WORLD } from './island.js';
+import { clamp, clamp01, lerp, smoothstep } from '../core/math.js';
+
+const WORLD_SIZE = WORLD.size;
 
 const CHUNK = 32;                 // metres
 const GRID = 40;                  // chunks per side (40 * 32 = 1280 m)
@@ -20,24 +24,24 @@ const MAX_LOD = LOD_QUADS.length - 1;
 const LOD_DIST = [58, 150, 360, 760];
 
 const TERRAIN_PARS = /* glsl */`
-  // Fills the surface with procedural strata, soil, sand and moss.
-  float terrainHeight(vec2 p) {
-    float h = fbm2(p * 0.085, 4) * 1.35;
-    h += ridge2(p * 0.22, 3) * 0.55;
-    h += fbm2(p * 0.9, 2) * 0.12;
-    return h;
+  // Triplanar normal blending (whiteout style).
+  vec3 triplanarNormal(vec3 n, vec3 tx, vec3 ty, vec3 tz, vec3 bw) {
+    vec3 nx = vec3(tx.xy + n.zy, abs(tx.z) * n.x);
+    vec3 ny = vec3(ty.xy + n.xz, abs(ty.z) * n.y);
+    vec3 nz = vec3(tz.xy + n.xy, abs(tz.z) * n.z);
+    return normalize(nx.zyx * bw.x + ny.xzy * bw.y + nz.xyz * bw.z);
   }
 `;
 
 export class Terrain {
-  constructor(island, atmos, quality) {
+  constructor(island, atmos, quality, detailTex) {
     this.island = island;
     this.atmos = atmos;
     this.group = new THREE.Group();
     this.group.name = 'terrain';
     this.chunks = new Map();       // key -> mesh
     this.cache = new Map();        // "cx,cz,lod" -> geometry
-    this.material = makeTerrainMaterial(atmos);
+    this.material = makeTerrainMaterial(atmos, island, detailTex);
     this.visible = new Set();
     this._dirty = true;
     this.stats = { chunks: 0, tris: 0 };
@@ -238,18 +242,34 @@ export class Terrain {
 function edgeCountUnused() {}
 
 /** A standard material with procedural rock / soil / sand / moss on top. */
-export function makeTerrainMaterial(atmos) {
+export function makeTerrainMaterial(atmos, island, detailTex) {
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff,
     roughness: 0.95,
     metalness: 0.0,
     dithering: true,
   });
-  mat.customProgramCacheKey = () => 'terrain-proc-v1';
+
+  // --- the island's own baked shadow in the sun's direction
+  let shadowTex = null;
+  if (island) {
+    const res = 512;
+    const data = island.bakeSunShadow(atmos.sunDir, res);
+    shadowTex = new THREE.DataTexture(data, res, res, THREE.RedFormat, THREE.UnsignedByteType);
+    shadowTex.needsUpdate = true;
+    shadowTex.minFilter = THREE.LinearFilter;
+    shadowTex.magFilter = THREE.LinearFilter;
+    shadowTex.wrapS = shadowTex.wrapT = THREE.ClampToEdgeWrapping;
+  }
+
+  mat.customProgramCacheKey = () => 'terrain-proc-v2';
   mat.onBeforeCompile = (shader) => {
-    if (typeof window !== 'undefined') { window.__terrainFrag = shader.fragmentShader; console.log('TERRAINFRAG', shader.fragmentShader.length); }
     shader.uniforms.uAtmos = atmos.uAtmos;
     shader.uniforms.uCamPos = atmos.uCamPos;
+    shader.uniforms.tSunShadow = { value: shadowTex };
+    shader.uniforms.tDetail = { value: detailTex };
+    shader.uniforms.uWorldSize = { value: WORLD_SIZE };
+    shader.uniforms.uDebugSplat = { value: (typeof location !== 'undefined' && location.hash === '#debugsplat') ? 1 : 0 };
 
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', /* glsl */`
@@ -259,12 +279,14 @@ export function makeTerrainMaterial(atmos) {
         varying vec4 vSplat;
         varying vec2 vExtra;
         varying vec3 vWorld;
+        varying vec3 vWN;
       `)
       .replace('#include <begin_vertex>', /* glsl */`
         #include <begin_vertex>
         vSplat = aSplat;
         vExtra = aExtra;
         vWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+        vWN = normal;
       `);
 
     shader.fragmentShader = shader.fragmentShader
@@ -273,50 +295,76 @@ export function makeTerrainMaterial(atmos) {
         varying vec4 vSplat;
         varying vec2 vExtra;
         varying vec3 vWorld;
+        varying vec3 vWN;
         uniform vec4 uAtmos[6];
         uniform vec3 uCamPos;
+        uniform sampler2D tSunShadow;
+        uniform sampler2D tDetail;
+        uniform float uWorldSize;
+        uniform float uDebugSplat;
         ${NOISE_GLSL}
         ${ATMOS_GLSL}
         ${TERRAIN_PARS}
       `)
       .replace('#include <map_fragment>', /* glsl */`
+        // the island's baked sun shadow (whole map, not just around the player)
+        float sunShadowFactor = texture2D(tSunShadow, vWorld.xz / uWorldSize + 0.5).r;
+
         vec2 wp = vWorld.xz;
-        float slope = 1.0 - clamp(vNormal.y, 0.0, 1.0);
-        // triplanar weights
-        vec3 bw = normalize(abs(vNormal) + 1e-4);
-        bw = pow(bw, vec3(4.0));
-        bw /= (bw.x + bw.y + bw.z);
+        float slope = 1.0 - clamp(vWN.y, 0.0, 1.0);
 
-        float det = terrainHeight(wp);
-        float rockH = det;
-        float soilH = fbm2(wp * 0.55, 3);
-        float sandH = fbm2(wp * 1.6, 2);
-        float mossH = fbm2(wp * 0.9 + 31.0, 3);
+        float det = fbm2(wp * 0.085, 4) * 0.9 + ridge2(wp * 0.24, 3) * 0.35;
+        float soilH = fbm2(wp * 0.42, 4);
+        float patchH = fbm2(wp * 0.11 + 13.0, 3);
+        float sandH = fbm2(wp * 1.7, 2);
+        float mossH = fbm2(wp * 0.85 + 31.0, 3);
+        float lichenH = fbm2(wp * 2.6 + 77.0, 3);
 
-        vec3 sandC = mix(vec3(0.76, 0.68, 0.53), vec3(0.86, 0.80, 0.66), sandH);
-        sandC *= 0.86 + 0.28 * fbm2(wp * 6.0, 2);
+        // --- sand and shingle
+        vec3 sandC = mix(vec3(0.70, 0.63, 0.49), vec3(0.84, 0.78, 0.63), sandH);
+        sandC *= 0.88 + 0.24 * fbm2(wp * 7.0, 2);
+        // --- turf: deep green, drier and browner on the ridges
+        vec3 turfA = vec3(0.115, 0.215, 0.062);
+        vec3 turfB = vec3(0.225, 0.300, 0.088);
+        vec3 turfC = vec3(0.315, 0.300, 0.115);
+        vec3 grassC = mix(turfA, turfB, soilH);
+        grassC = mix(grassC, turfC, smoothstep(0.45, 0.85, patchH) * 0.75);
+        grassC *= 0.88 + 0.26 * fbm2(wp * 4.1, 2);
+        // --- rock: cool grey with warm bedding planes
+        vec3 rockA = vec3(0.245, 0.245, 0.255);
+        vec3 rockB = vec3(0.395, 0.375, 0.335);
+        vec3 rockC2 = mix(rockA, rockB, det * 0.7 + 0.3);
+        float strata = sin(vWorld.y * 0.62 + det * 2.6 + patchH * 2.0) * 0.5 + 0.5;
+        rockC2 *= 0.82 + 0.30 * strata;
+        rockC2 = mix(rockC2, vec3(0.255, 0.205, 0.150), fbm2(wp * 0.11 + 7.0, 2) * 0.40);
+        // lichen and moss on the rock
+        rockC2 = mix(rockC2, vec3(0.30, 0.33, 0.22), smoothstep(0.55, 0.85, lichenH) * 0.42);
+        // --- moss
+        vec3 mossC = mix(vec3(0.070, 0.155, 0.055), vec3(0.135, 0.245, 0.085), mossH);
 
-        vec3 grassC = mix(vec3(0.16, 0.26, 0.09), vec3(0.30, 0.36, 0.13), soilH);
-        grassC = mix(grassC, vec3(0.24, 0.30, 0.11), fbm2(wp * 0.22, 3));
-        grassC *= 0.85 + 0.3 * fbm2(wp * 3.3, 2);
+        vec3 alb = sandC * vSplat.x + grassC * vSplat.y + rockC2 * vSplat.z + mossC * vSplat.w;
+        if (uDebugSplat > 0.5) alb = vec3(vSplat.x, vSplat.y, vSplat.z);
 
-        vec3 rockC = mix(vec3(0.29, 0.29, 0.30), vec3(0.44, 0.41, 0.36), rockH);
-        // horizontal strata
-        float strata = sin(vWorld.y * 0.85 + rockH * 2.2) * 0.5 + 0.5;
-        rockC *= 0.86 + 0.26 * strata;
-        rockC = mix(rockC, vec3(0.30, 0.26, 0.21), fbm2(wp * 0.13 + 7.0, 2) * 0.45);
+        // detail texture: cracks, mottling and a hint of damp in the hollows
+        vec4 dtl = texture2D(tDetail, wp * 0.55);
+        vec4 dtl2 = texture2D(tDetail, wp * 0.13 + 0.37);
+        float camDist = length(vWorld - uCamPos);
+        float dtlFade = 1.0 - smoothstep(15.0, 60.0, camDist);
+        float crack = (1.0 - dtl.b) * dtlFade;
+        float mott = dtl.a * 0.6 + dtl2.a * 0.4;
+        alb *= 0.86 + 0.26 * mott;
+        alb *= 1.0 - crack * 0.11 * vSplat.z;
+        // exposed rock on steep faces: cooler, bluer, faintly banded
+        float banded = smoothstep(0.3, 0.8, vSplat.z * slope) * (0.5 + 0.5 * sin(vWorld.y * 0.30 + det * 2.2));
+        alb *= 1.0 - banded * 0.22;
+        // sand and turf are smoother than bare rock
+        alb *= mix(1.0, 0.90, vSplat.x);
 
-        vec3 mossC = mix(vec3(0.10, 0.19, 0.09), vec3(0.17, 0.28, 0.11), mossH);
-
-        vec3 alb = sandC * vSplat.x + grassC * vSplat.y + rockC * vSplat.z + mossC * vSplat.w;
-        // normalise the blend so the weights always sum to one
-        float wsum = vSplat.x + vSplat.y + vSplat.z + vSplat.w;
-        alb = mix(rockC, alb, clamp(wsum, 0.0, 1.0));
         // snow on the high flats
-        alb = mix(alb, vec3(0.88, 0.91, 0.96), clamp(vExtra.x, 0.0, 1.0) * smoothstep(0.35, 0.1, slope));
+        alb = mix(alb, vec3(0.86, 0.90, 0.96), clamp(vExtra.x, 0.0, 1.0) * smoothstep(0.40, 0.12, slope));
 
         // subtle large-scale colour drift so the island does not look tiled
-        alb *= 0.9 + 0.2 * fbm2(wp * 0.021 + 91.0, 3);
+        alb *= 0.92 + 0.16 * fbm2(wp * 0.017 + 91.0, 3);
 
         diffuseColor.rgb *= alb;
       `)
@@ -331,23 +379,38 @@ export function makeTerrainMaterial(atmos) {
       `)
       .replace('#include <normal_fragment_maps>', /* glsl */`
         {
-          // procedural bump: finite differences of the detail height field
-          vec2 wp3 = vWorld.xz;
-          float e = 0.35;
-          float h0 = terrainHeight(wp3);
-          float hx = terrainHeight(wp3 + vec2(e, 0.0));
-          float hz = terrainHeight(wp3 + vec2(0.0, e));
-          float amp = 0.55 * (1.0 - vSplat.x * 0.6);
-          vec3 bump = vec3((h0 - hx) / e, 0.0, (h0 - hz) / e) * amp;
-          // flatten the bump on steep rock faces
-          bump *= mix(1.0, 0.35, smoothstep(0.35, 0.75, 1.0 - vNormal.y));
-          normal = normalize(normal + bump * 0.55);
+          // triplanar detail from the baked rock texture
+          vec3 nw = normalize(vWN);
+          vec3 bw = pow(abs(nw), vec3(4.0));
+          bw /= (bw.x + bw.y + bw.z);
+
+          float s1 = 0.42;   // ~2.4 m per tile
+          float s2 = 0.115;  // ~8.7 m per tile
+          vec3 dX = texture2D(tDetail, vWorld.zy * s1).rgb * 2.0 - 1.0;
+          vec3 dY = texture2D(tDetail, vWorld.xz * s1).rgb * 2.0 - 1.0;
+          vec3 dZ = texture2D(tDetail, vWorld.xy * s1).rgb * 2.0 - 1.0;
+          vec3 nDetail = triplanarNormal(nw, dX, dY, dZ, bw);
+
+          vec3 fX = texture2D(tDetail, vWorld.zy * s2 + 0.37).rgb * 2.0 - 1.0;
+          vec3 fY = texture2D(tDetail, vWorld.xz * s2 + 0.37).rgb * 2.0 - 1.0;
+          vec3 fZ = texture2D(tDetail, vWorld.xy * s2 + 0.37).rgb * 2.0 - 1.0;
+          vec3 nFar = triplanarNormal(nw, fX, fY, fZ, bw);
+
+          float near = 1.0 - smoothstep(25.0, 90.0, length(vWorld - uCamPos));
+          vec3 wN = normalize(mix(nFar, nDetail, near));
+          // turf is smoother than bare rock
+          wN = normalize(mix(wN, nw, vSplat.y * 0.45 + vSplat.x * 0.35));
+          normal = normalize((viewMatrix * vec4(wN, 0.0)).xyz);
         }
+      `)
+      .replace('directionalLight = directionalLights[ i ];', /* glsl */`
+        directionalLight = directionalLights[ i ];
+        directionalLight.color *= sunShadowFactor;
       `)
       .replace('#include <fog_fragment>', /* glsl */`
         gl_FragColor.rgb = applyFog(gl_FragColor.rgb, vWorld);
       `);
-    if (typeof window !== 'undefined') { window.__terrainFrag = shader.fragmentShader; console.log('TERRAINFRAG', shader.fragmentShader.length); }
+    if (typeof window !== 'undefined') { window.__terrainFrag = shader.fragmentShader; }
   };
   return mat;
 }
